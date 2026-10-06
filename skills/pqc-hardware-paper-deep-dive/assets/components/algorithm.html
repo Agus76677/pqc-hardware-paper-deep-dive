@@ -1,0 +1,33 @@
+<!--
+  Bundled static rendering of the blog's Algorithm + AlgorithmStep components.
+  Copy this fragment into article.html and replace the example values/content.
+  No Astro, MDX, npm package, or runtime component is required.
+-->
+<figure class="algorithm" aria-label="Algorithm 1: Example title">
+  <figcaption class="algorithm-caption">
+    <span class="algorithm-label">Algorithm 1</span>
+    <span class="algorithm-title">Example title</span>
+  </figcaption>
+
+  <div class="algorithm-io">
+    <div class="algorithm-io-row">
+      <span class="algorithm-io-label">Input:</span>
+      <div class="algorithm-io-content">observations, parameters</div>
+    </div>
+    <div class="algorithm-io-row">
+      <span class="algorithm-io-label">Output:</span>
+      <div class="algorithm-io-content">predicted action</div>
+    </div>
+  </div>
+
+  <ol class="algorithm-lines">
+    <li class="algorithm-step" style="--algorithm-indent: 0">
+      <span class="algorithm-line-number" aria-hidden="true"></span>
+      <span class="algorithm-line-content"><strong class="algorithm-keyword">Initialize</strong> state</span>
+    </li>
+    <li class="algorithm-step" style="--algorithm-indent: 1">
+      <span class="algorithm-line-number" aria-hidden="true"></span>
+      <span class="algorithm-line-content">Update state and return action</span>
+    </li>
+  </ol>
+</figure>

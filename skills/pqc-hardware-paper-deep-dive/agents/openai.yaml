@@ -1,0 +1,4 @@
+interface:
+  display_name: "PQC Hardware Paper Deep Dive"
+  short_description: "Read PQC hardware papers for architecture research"
+  default_prompt: "使用 $pqc-hardware-paper-deep-dive 深读这篇后量子密码硬件论文，解释算法到架构的机制、ATP 比较口径与可验证创新假设，并生成有来源的中文 HTML 和 PDF。"
