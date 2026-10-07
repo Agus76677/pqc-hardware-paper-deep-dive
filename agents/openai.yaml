@@ -1,0 +1,4 @@
+interface:
+  display_name: "PQC Hardware Paper Deep Dive"
+  short_description: "Read PQC hardware papers with traceable evidence"
+  default_prompt: "使用 $pqc-hardware-paper-deep-dive 精读这篇后量子密码硬件论文，解释架构机制，保留原始实验条件和指标，给出有依据的研究思考，并生成带可见引用的中文 HTML 与 PDF。"

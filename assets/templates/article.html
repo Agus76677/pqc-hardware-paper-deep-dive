@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="paper-title" content="{{PAPER_TITLE_HTML}}">
+  <meta name="paper-authors" content="{{PAPER_AUTHORS_HTML}}">
+  <meta name="paper-year" content="{{YEAR_HTML}}">
+  <meta name="paper-url" content="{{PAPER_URL_HTML}}">
+  <meta name="code-url" content="{{CODE_URL_HTML}}">
+  <meta name="project-url" content="{{PROJECT_URL_HTML}}">
+  <meta name="dataset-url" content="{{DATASET_URL_HTML}}">
+  <meta name="domains" content="{{TAGS_HTML}}">
+  <title>{{ARTICLE_TITLE_HTML}}</title>
+  <link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<header class="paper-header">
+  <p class="eyebrow">{{TAGS_INLINE_HTML}}</p>
+  <h1>{{ARTICLE_TITLE_HTML}}</h1>
+  <p class="subtitle">{{PAPER_TITLE_HTML}}</p>
+  <p class="byline">{{AUTHOR_HTML}} · {{DATE_HTML}}</p>
+  <dl class="paper-meta">
+    <dt>原论文作者</dt><dd data-paper-authors>{{PAPER_AUTHORS_HTML}}</dd>
+    <dt>论文链接</dt><dd data-paper-url>{{PAPER_LINK_HTML}}</dd>
+    <dt>代码 / 项目</dt><dd>{{LINKS_HTML}}</dd>
+  </dl>
+</header>
+<!-- Lower-level sections are conditional; remove writing prompts before delivery. -->
+<main>
+  <h2>1. 论文概述</h2>
+  <p><span class="fact paper">【Paper】</span>在此准确概括范围、贡献和关键结果。<a data-cite="paper" data-locator="Abstract">[paper]</a></p>
+  <h2>2. 背景与相关工作</h2>
+  <p><span class="fact paper">【Paper】</span>在此准确交代必要前提及作者已有工作定位。<a data-cite="paper" data-locator="Introduction">[paper]</a></p>
+  <h2>3. 问题定义</h2>
+  <p><span class="fact paper">【Paper】</span>在此准确定义参数、输入输出、运算边界、平台和目标。<a data-cite="paper" data-locator="Problem definition">[paper]</a></p>
+  <h2>4. 方法</h2>
+  <p><span class="fact paper">【Paper】</span>在此准确解释算法到算术、存储与调度的机制，只扩展实际相关小节。<a data-cite="paper" data-locator="Method">[paper]</a></p>
+  <h2>5. 实验</h2>
+  <p><span class="fact paper">【Paper】</span>在此准确保存原始表格和每行配置；作者 ATP 与重算分列。<a data-cite="paper" data-locator="Results">[paper]</a></p>
+  <h2>6. 方法分析</h2>
+  <p><span class="fact analysis">【Analysis】</span>在此准确解释收益机制、创新、代价及证据边界。</p>
+  <h2>7. 局限性</h2>
+  <p><span class="fact analysis">【Analysis】</span>在此准确区分作者声明与分析，说明实际复现及适用边界。</p>
+  <h2>8. 启发与研究思考</h2>
+  <p><span class="fact analysis">【Analysis】</span>在此准确提出有依据的假设、最小实验和否定条件，不强行凑数量。</p>
+  <h2>9. 资料来源</h2>
+  <p><span class="fact analysis">【Analysis】</span>在此准确说明来源核验、版本、图表定位和证据缺口。</p>
+  <div id="bibliography"></div>
+</main>
+</body>
+</html>

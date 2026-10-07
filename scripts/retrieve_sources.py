@@ -40,7 +40,10 @@ def normalize_title(value: str) -> str:
 
 def parse_arxiv_id(value: str) -> str:
     match = re.search(r"(?:arxiv\.org/(?:abs|pdf)/)?([a-z-]+/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?", value, re.I)
-    return match.group(1) if match else value.strip()
+    if not match:
+        raise RuntimeError("Invalid arXiv identifier: " + value)
+    version = re.search(r"v\d+$", match.group(0))
+    return match.group(1) + (version.group(0) if version else "")
 
 
 def arxiv_metadata(arxiv_id: str, timeout: int) -> dict:
@@ -52,6 +55,14 @@ def arxiv_metadata(arxiv_id: str, timeout: int) -> dict:
     if entry is None:
         raise RuntimeError(f"arXiv returned no entry for {clean_id}")
     title = " ".join((entry.findtext("atom:title", default="", namespaces=ns)).split())
+    returned_id = entry.findtext("atom:id", default="", namespaces=ns)
+    if not returned_id or "api/errors" in returned_id:
+        raise RuntimeError("arXiv returned an error entry for " + clean_id)
+    exact_id = parse_arxiv_id(returned_id)
+    if re.sub(r"v\d+$", "", exact_id) != re.sub(r"v\d+$", "", clean_id):
+        raise RuntimeError("arXiv returned a different paper identity")
+    if re.search(r"v\d+$", clean_id) and exact_id != clean_id:
+        raise RuntimeError("arXiv returned a different paper version")
     authors = [
         " ".join((node.findtext("atom:name", default="", namespaces=ns)).split())
         for node in entry.findall("atom:author", ns)
@@ -64,9 +75,10 @@ def arxiv_metadata(arxiv_id: str, timeout: int) -> dict:
         "authors": authors,
         "year": published[:4],
         "venue": journal_ref,
-        "arxiv_id": clean_id,
+        "arxiv_id": exact_id,
         "doi": doi,
-        "url": f"https://arxiv.org/abs/{clean_id}",
+        "url": f"https://arxiv.org/abs/{exact_id}",
+        "version": exact_id,
         "verified": True,
     }
 
@@ -94,6 +106,7 @@ def crossref_item_to_metadata(item: dict) -> dict:
 
 
 def crossref_doi_metadata(doi: str, timeout: int) -> dict:
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi.strip(), flags=re.I)
     encoded = urllib.parse.quote(doi.strip(), safe="")
     payload = fetch_json(f"https://api.crossref.org/works/{encoded}", timeout)
     return crossref_item_to_metadata(payload["message"])
@@ -144,11 +157,15 @@ def title_candidate_is_confirmed(existing: dict, candidate: dict, score: float) 
 
 
 def merge_metadata(base: dict, incoming: dict) -> dict:
+    for key in ("doi", "arxiv_id", "year"):
+        if base.get(key) and incoming.get(key) and str(base[key]).lower() != str(incoming[key]).lower():
+            raise RuntimeError("Paper identity conflict in %s; correct existing metadata explicitly before retrieval" % key)
+    if base.get("title") and incoming.get("title") and normalize_title(base["title"]) != normalize_title(incoming["title"]):
+        raise RuntimeError("Paper title conflicts with the existing identity")
+    if base.get("authors") and incoming.get("authors") and not (author_surnames(base["authors"]) & author_surnames(incoming["authors"])):
+        raise RuntimeError("Paper authors conflict with the existing identity")
     result = dict(base)
-    for key, value in incoming.items():
-        if value and (not result.get(key) or key in {"verified"}):
-            result[key] = value
-    result["authors"] = unique_preserving_order([*(base.get("authors") or []), *(incoming.get("authors") or [])])
+    result.update({key: value for key, value in incoming.items() if value not in (None, "", [])})
     return result
 
 
@@ -162,12 +179,16 @@ def source_entry(source_id: str, source_type: str, title: str, url: str, version
         "version": version,
         "supports": [],
         "verified": verified,
+        "verification_scope": "metadata" if verified else "unverified",
     }
 
 
 def merge_source(previous: dict | None, current: dict) -> dict:
     if not previous:
         return current
+    changed = previous.get("url", "") != current.get("url", "") or bool(current.get("version") and current.get("version") != previous.get("version"))
+    if changed:
+        return dict(current)
     merged = dict(previous)
     for key, value in current.items():
         if value not in (None, "", []):
@@ -176,6 +197,8 @@ def merge_source(previous: dict | None, current: dict) -> dict:
         [*(previous.get("supports") or []), *(current.get("supports") or [])]
     )
     merged["verified"] = bool(previous.get("verified") or current.get("verified"))
+    if previous.get("verification_scope") == "content":
+        merged["verification_scope"] = "content"
     return merged
 
 
@@ -225,10 +248,26 @@ def update_bibliography(path: Path, metadata: dict, entries: list[dict]) -> None
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(AUTO_BEGIN) + r".*?" + re.escape(AUTO_END), re.S)
     if pattern.search(existing):
-        rendered = pattern.sub(block, existing)
+        rendered = pattern.sub(lambda _: block, existing)
     else:
         rendered = (existing.rstrip() + "\n\n" + block + "\n").lstrip()
     path.write_text(rendered, encoding="utf-8")
+
+
+def sync_html_metadata(paper_dir: Path, metadata: dict) -> None:
+    from html import escape
+    path = paper_dir / "article.html"
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    values = {"paper-title": metadata.get("title", ""), "paper-authors": ", ".join(metadata.get("authors", [])) or "未报告", "paper-year": str(metadata.get("year") or "未报告"), "paper-url": metadata.get("url", "")}
+    for key, value in values.items():
+        pattern = r'<meta\s+name="' + re.escape(key) + r'"\s+content="[^"]*"\s*/?>'
+        text = re.sub(pattern, lambda m, k=key, v=value: '<meta name="%s" content="%s">' % (k, escape(v, quote=True)), text)
+    text = re.sub(r'<p class="subtitle">.*?</p>', lambda _: '<p class="subtitle">'+escape(values['paper-title'])+'</p>', text, flags=re.S)
+    text = re.sub(r'<dd data-paper-authors>.*?</dd>', lambda _: '<dd data-paper-authors>'+escape(values['paper-authors'])+'</dd>', text, flags=re.S)
+    text = re.sub(r'<dd data-paper-url>.*?</dd>', lambda _: '<dd data-paper-url><a href="'+escape(values['paper-url'],quote=True)+'">'+escape(values['paper-url'])+'</a></dd>', text, flags=re.S)
+    path.write_text(text, encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -278,7 +317,7 @@ def main() -> int:
                     print(f"- {reason}")
                 print("Provide arXiv/DOI/PDF, or verify this candidate and re-run with --accept-best.")
                 return 1
-            resolved["verified"] = bool(confirmed or args.accept_best)
+            resolved["verified"] = bool(confirmed)
             metadata = merge_metadata(metadata, resolved)
     except (urllib.error.URLError, TimeoutError, ET.ParseError, KeyError, RuntimeError) as exc:
         print(f"metadata retrieval failed: {exc}")
@@ -294,6 +333,7 @@ def main() -> int:
             "paper",
             metadata.get("title", "Primary paper"),
             paper_url,
+            version=metadata.get("version", ""),
             verified=bool(metadata.get("verified")),
         ),
     )
@@ -307,12 +347,13 @@ def main() -> int:
             existing[source_id] = merge_source(
                 existing.get(source_id), source_entry(source_id, source_type, title, url, version, False)
             )
-    for index, item in enumerate(args.document, start=1):
+    for item in args.document:
         if "=" not in item:
             print(f"invalid --document value: {item!r}; expected TITLE=URL")
             return 2
         title, url = item.split("=", 1)
-        source_id = f"document-{index}"
+        import hashlib
+        source_id = "document-" + hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:16]
         existing[source_id] = merge_source(
             existing.get(source_id),
             source_entry(source_id, "documentation", title.strip(), url.strip(), verified=False),
@@ -321,7 +362,7 @@ def main() -> int:
     entries = list(existing.values())
     manifest.update(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": date.today().isoformat(),
             "paper": metadata,
             "sources": entries,
@@ -330,6 +371,7 @@ def main() -> int:
     )
     write_json_yaml(manifest_path, manifest)
     update_bibliography(paper_dir / "references.bib", metadata, entries)
+    sync_html_metadata(paper_dir, metadata)
     print(f"updated: {manifest_path}")
     print(f"updated: {paper_dir / 'references.bib'}")
     if confidence is not None:

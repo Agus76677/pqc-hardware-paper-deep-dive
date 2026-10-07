@@ -13,11 +13,11 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from paper_common import executable, fail, read_json_yaml, run, slugify, write_json_yaml
+from paper_common import executable, fail, read_json_yaml, run, slugify, write_json_yaml, find_imagemagick
 
 
 IMAGE_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".eps", ".svg")
-INCLUDE_RE = re.compile(r"\\includegraphics(?:\[([^\]]*)\])?\{([^}]+)\}")
+INCLUDE_RE = re.compile(r"\\includegraphics\*?(?:\[([^\]]*)\])?\{([^}]+)\}")
 CAPTION_START_RE = re.compile(r"\\caption(?:\[[^\]]*\])?\{")
 
 
@@ -35,6 +35,8 @@ def safe_extract_tar(bundle: Path, destination: Path) -> None:
         for member in archive.getmembers():
             if member.issym() or member.islnk():
                 continue
+            if not (member.isfile() or member.isdir()):
+                continue
             target = (destination / member.name).resolve()
             if root not in target.parents and target != root:
                 raise RuntimeError(f"Unsafe archive path: {member.name}")
@@ -43,6 +45,10 @@ def safe_extract_tar(bundle: Path, destination: Path) -> None:
 
 def resolve_figure(tex_file: Path, source_dir: Path, requested: str) -> Path | None:
     roots = [tex_file.parent, source_dir]
+    text = tex_file.read_text(encoding="utf-8", errors="replace")
+    for entry in re.finditer(r"\\graphicspath\s*\{((?:\s*\{[^}]*\})+)\s*\}", text):
+        for relative in re.findall(r"\{([^}]*)\}", entry.group(1)):
+            roots.extend([tex_file.parent / relative, source_dir / relative])
     for root in roots:
         direct = (root / requested).resolve()
         if direct.is_file():
@@ -86,16 +92,19 @@ def clean_caption(value: str) -> str:
 
 
 def nearby_caption(text: str, match: re.Match[str]) -> str:
-    forward_start = match.end()
-    forward = CAPTION_START_RE.search(text, forward_start, min(len(text), forward_start + 5000))
-    caption_match = forward
-    if not caption_match:
-        backward_start = max(0, match.start() - 2500)
-        candidates = list(CAPTION_START_RE.finditer(text, backward_start, match.start()))
-        caption_match = candidates[-1] if candidates else None
-    if not caption_match:
+    # Find the innermost enclosing supported float; never cross into the next figure.
+    opens = list(re.finditer(r"\\begin\{(figure\*?|table\*?|subfigure)\}", text[:match.start()]))
+    for opening in reversed(opens):
+        ending = re.search(r"\\end\{" + re.escape(opening.group(1)) + r"\}", text[opening.end():])
+        if not ending: continue
+        stop = opening.end() + ending.start()
+        if stop < match.end(): continue
+        candidates = list(CAPTION_START_RE.finditer(text, opening.end(), stop))
+        if len(candidates) == 1:
+            return clean_caption(balanced_content(text, candidates[0].end()-1))
+        # Multiple captions are ambiguous; retain an evidence gap instead of guessing.
         return ""
-    return clean_caption(balanced_content(text, caption_match.end() - 1))
+    return ""
 
 
 def inventory_source(source_dir: Path) -> list[dict]:
@@ -103,6 +112,7 @@ def inventory_source(source_dir: Path) -> list[dict]:
     for tex_file in sorted(source_dir.rglob("*.tex")):
         try:
             text = tex_file.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"(?m)(?<!\\)%.*$", "", text)
         except OSError:
             continue
         for index, match in enumerate(INCLUDE_RE.finditer(text), start=1):
@@ -111,6 +121,7 @@ def inventory_source(source_dir: Path) -> list[dict]:
             inventory.append(
                 {
                     "id": f"{tex_file.stem}-{index}",
+                    "kind": "includegraphics",
                     "tex_file": str(tex_file.relative_to(source_dir)),
                     "requested_path": requested,
                     "resolved_path": str(resolved.relative_to(source_dir)) if resolved and source_dir in resolved.parents else "",
@@ -118,6 +129,8 @@ def inventory_source(source_dir: Path) -> list[dict]:
                     "caption": nearby_caption(text, match),
                 }
             )
+        for index, match in enumerate(re.finditer(r"\\begin\{(figure\*?|table\*?|subfigure)\}", text), start=1):
+            inventory.append({"id": f"{tex_file.stem}-float-{index}", "kind": match.group(1), "tex_file": str(tex_file.relative_to(source_dir)), "note": "Candidate float; confirm published number, caption, macro/TikZ/subfigure contents and crop visually."})
     return inventory
 
 
@@ -138,7 +151,7 @@ def render_pdf(input_path: Path, output_path: Path, page: int, dpi: int) -> None
 
 
 def crop_image(input_path: Path, output_path: Path, x: int, y: int, width: int, height: int) -> None:
-    image_tool = executable("magick", "convert")
+    image_tool = find_imagemagick()
     if not image_tool:
         fail("ImageMagick is required; run install_dependencies.py first")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,11 +160,37 @@ def crop_image(input_path: Path, output_path: Path, x: int, y: int, width: int, 
 
 def autocrop_image(input_path: Path, output_path: Path, fuzz: float, border: int) -> None:
     """Remove uniform white/near-white margins left by PDF or raster rendering."""
-    image_tool = executable("magick", "convert")
+    image_tool = find_imagemagick()
     if not image_tool:
         fail("ImageMagick is required; run install_dependencies.py first")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run([image_tool, str(input_path), "-fuzz", f"{fuzz:g}%", "-trim", "+repage", "-bordercolor", "white", "-border", str(max(0, border)), str(output_path)])
+
+
+def latex_crop(input_path, output_path, lengths, dpi):
+    from PIL import Image
+    factors = {"bp": 1.0, "pt": 72/72.27, "mm":72/25.4, "cm":72/2.54, "in":72.0}
+    values = []
+    for length in lengths:
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(bp|pt|mm|cm|in)?", length)
+        if not match: fail("Unsupported trim length; use nonnegative explicit lengths")
+        values.append(float(match.group(1))*factors[match.group(2) or "bp"])
+    with tempfile.TemporaryDirectory(prefix="latex-crop-") as temporary:
+        if input_path.suffix.lower() == ".pdf":
+            dpi = dpi or 300
+            raster = Path(temporary)/"page.png"
+            render_pdf(input_path, raster, 1, int(dpi))
+        else:
+            if not dpi or dpi <= 0: fail("Raster trim needs explicit intrinsic --dpi; do not guess from display size")
+            raster = input_path
+        left,bottom,right,top = [round(v*dpi/72) for v in values]
+        with Image.open(raster) as image:
+            width,height = image.size
+            if left+right>=width or top+bottom>=height: fail("Trim removes the entire figure")
+            cropped=image.crop((left,top,width-right,height-bottom))
+            output_path.parent.mkdir(parents=True,exist_ok=True)
+            cropped.save(output_path,dpi=(dpi,dpi))
+    print(output_path)
 
 
 def register_figure(args: argparse.Namespace) -> None:
@@ -170,15 +209,17 @@ def register_figure(args: argparse.Namespace) -> None:
         {
             "id": args.id or slugify(figure_path.stem),
             "path": relative.as_posix(),
-            "paper_figure": args.paper_figure,
+            "original_figure": args.paper_figure,
             "caption": args.caption,
             "source_id": args.source_id,
             "source_file": args.source_file,
-            "crop": args.crop,
+            "crop": args.crop or "none",
             "accessed": date.today().isoformat(),
         }
     )
     manifest["figures"] = figures
+    if args.source_id not in {entry.get("id") for entry in manifest.get("sources", [])}:
+        fail("Unknown --source-id; register the source before registering a figure")
     write_json_yaml(manifest_path, manifest)
     print(f"registered: {relative.as_posix()}")
 
@@ -217,6 +258,11 @@ def parse_args() -> argparse.Namespace:
     autocrop.add_argument("--output", type=Path, required=True)
     autocrop.add_argument("--fuzz", type=float, default=3.0, help="Near-white tolerance in percent (default: 3).")
     autocrop.add_argument("--border", type=int, default=8, help="White border in pixels (default: 8).")
+    latex = subparsers.add_parser("latex-crop", help="Apply explicit LaTeX trim+clip semantics (left bottom right top).")
+    latex.add_argument("--input", required=True, type=Path)
+    latex.add_argument("--output", required=True, type=Path)
+    latex.add_argument("--trim", required=True, nargs=4, help="Four lengths; bare values use bp, or specify bp/pt/mm/cm/in.")
+    latex.add_argument("--dpi", type=float, help="Required for raster inputs; PDF defaults to 300 dpi.")
 
     register = subparsers.add_parser("register", help="Record figure provenance in sources.yaml.")
     register.add_argument("--paper-dir", type=Path, required=True)
@@ -245,8 +291,14 @@ def main() -> int:
             if tarfile.is_tarfile(bundle):
                 safe_extract_tar(bundle, source_dir)
             else:
+                import gzip
                 source_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(bundle, source_dir / "main.tex")
+                raw = bundle.read_bytes()
+                if raw.startswith(b'\x1f\x8b'): raw = gzip.decompress(raw)
+                if raw.startswith(b'%PDF-') or b'<' in raw[:20]: fail("arXiv did not return a TeX source bundle")
+                try: raw.decode("utf-8")
+                except UnicodeDecodeError: fail("Source is not UTF-8 TeX; inspect it manually")
+                (source_dir / "main.tex").write_bytes(raw)
         print(source_dir)
         return 0
     if args.command == "download-pdf":
@@ -286,9 +338,24 @@ def main() -> int:
     if args.command == "register":
         register_figure(args)
         return 0
+    if args.command == "latex-crop":
+        latex_crop(args.input.resolve(), args.output.resolve(), args.trim, args.dpi)
+        return 0
     if args.command == "verify":
         figures = [path for path in args.figures_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
-        bad = [path for path in figures if path.stat().st_size < 128]
+        bad = []
+        from PIL import Image
+        import xml.etree.ElementTree as ET
+        from validate_output import valid_pdf
+        for path in figures:
+            try:
+                if path.suffix.lower() == ".pdf":
+                    if not valid_pdf(path): raise ValueError("unparseable PDF")
+                elif path.suffix.lower() == ".svg":
+                    if ET.parse(path).getroot().tag.split('}')[-1] != 'svg': raise ValueError("not SVG")
+                else:
+                    with Image.open(path) as image: image.verify()
+            except Exception: bad.append(path)
         for path in figures:
             print(f"{path}: {path.stat().st_size} bytes")
         if not figures:

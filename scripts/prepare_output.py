@@ -14,7 +14,7 @@ from paper_common import bibtex_escape, bibtex_url_escape, fail, skill_root, slu
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-root", type=Path, default=Path("outputs"))
+    parser.add_argument("--output-root", type=Path, required=True, help="Explicit user workspace output root; never infer the Skill install directory.")
     parser.add_argument("--name", help="User-selected output directory name (highest priority).")
     parser.add_argument("--abbreviation", help="Official paper abbreviation.")
     parser.add_argument("--title", required=True, help="Original paper title.")
@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-url", default="")
     parser.add_argument("--dataset-url", default="")
     parser.add_argument("--tag", action="append", default=[])
+    parser.add_argument("--metrics-registry", type=Path, help="Copy an explicit project metric registry snapshot; no global defaults.")
+    parser.add_argument("--pdf", type=Path, help="Local primary PDF; copied into the output for source registration.")
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -54,6 +56,11 @@ def write_if_allowed(path: Path, content: str, resume: bool) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.metrics_registry and not args.metrics_registry.is_file():
+        fail("Metric registry does not exist: " + str(args.metrics_registry))
+    if args.pdf:
+        from validate_output import valid_pdf
+        if not valid_pdf(args.pdf.resolve()): fail("Primary PDF cannot be parsed: " + str(args.pdf))
     directory_seed = args.name or args.abbreviation or args.title
     paper_name = slugify(directory_seed)
     target = args.output_root.expanduser().resolve() / paper_name
@@ -64,6 +71,13 @@ def main() -> int:
     (target / "figures").mkdir(exist_ok=True)
     (target / "tables").mkdir(exist_ok=True)
     (target / "build").mkdir(exist_ok=True)
+    if args.pdf:
+        import shutil
+        destination = target / "original-paper.pdf"
+        if not destination.exists(): shutil.copy2(args.pdf.resolve(), destination)
+        args.paper_url = args.paper_url or destination.as_uri()
+    elif not args.paper_url:
+        args.paper_url = ("https://arxiv.org/abs/" + args.arxiv_id) if args.arxiv_id else (("https://doi.org/" + args.doi) if args.doi else "")
 
     today = date.today().isoformat()
     article_title = args.article_title or f"{args.title} 论文深度解读"
@@ -74,8 +88,8 @@ def main() -> int:
         "PAPER_TITLE_HTML": escape(args.title),
         "AUTHOR_HTML": escape(args.author),
         "DATE_HTML": escape(today),
-        "PAPER_AUTHORS_HTML": escape(paper_authors or "Unknown"),
-        "YEAR_HTML": escape(args.year),
+        "PAPER_AUTHORS_HTML": escape(paper_authors or "未报告"),
+        "YEAR_HTML": escape(args.year or "未报告"),
         "PAPER_URL_HTML": escape(args.paper_url),
         "CODE_URL_HTML": escape(args.code_url),
         "PROJECT_URL_HTML": escape(args.project_url),
@@ -120,7 +134,7 @@ def main() -> int:
                 }
             )
     sources = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": today,
         "paper": {
             "title": args.title,
@@ -133,6 +147,8 @@ def main() -> int:
         },
         "sources": source_entries,
         "figures": [],
+        "evidence_gaps": [],
+        "figure_omission_reason": "",
     }
     sources_path = target / "sources.yaml"
     if not sources_path.exists() or not args.resume:
@@ -145,6 +161,11 @@ def main() -> int:
     theme = assets / "html-theme" / "theme.css"
     if theme.is_file() and not (target / "theme.css").exists():
         (target / "theme.css").write_text(theme.read_text(encoding="utf-8"), encoding="utf-8")
+
+    from paper_common import read_json_yaml
+    registry = read_json_yaml(args.metrics_registry.resolve()) if args.metrics_registry else {"schema_version": 1, "metrics": []}
+    write_if_allowed(target / "metrics-registry.json", json.dumps(registry, ensure_ascii=False, indent=2) + "\n", args.resume)
+    write_if_allowed(target / "metrics.json", json.dumps({"schema_version": 1, "results": [], "derived": []}, ensure_ascii=False, indent=2) + "\n", args.resume)
 
     print(target)
     return 0
